@@ -4,6 +4,8 @@ import com.hospital.agendamento_api.dto.*;
 import com.hospital.agendamento_api.entity.Cargo;
 import com.hospital.agendamento_api.entity.Endereco;
 import com.hospital.agendamento_api.entity.Usuario;
+import com.hospital.agendamento_api.exception.BusinessException;
+import com.hospital.agendamento_api.exception.ResourceNotFoundException;
 import com.hospital.agendamento_api.repository.CargoRepository;
 import com.hospital.agendamento_api.repository.EnderecoRepository;
 import com.hospital.agendamento_api.repository.UsuarioRepository;
@@ -37,15 +39,15 @@ public class UsuarioService {
     public UsuarioResponseDTO cadastrar(UsuarioCadastroRequestDTO dto) {
         // 1. Validações de duplicação
         if (usuarioRepository.existsByCpf(dto.cpf())) {
-            throw new IllegalArgumentException("Já existe um usuário cadastrado com este CPF.");
+            throw new BusinessException("Já existe um usuário cadastrado com este CPF.");
         }
         if (usuarioRepository.existsByEmail(dto.email())) {
-            throw new IllegalArgumentException("Já existe um usuário cadastrado com este E-mail.");
+            throw new BusinessException("Já existe um usuário cadastrado com este E-mail.");
         }
 
-        // 2. Busca o Cargo
-        Cargo cargo = cargoRepository.findById(dto.cargoId())
-                .orElseThrow(() -> new IllegalArgumentException("Cargo não encontrado com o ID: " + dto.cargoId()));
+        // 2. Cadastro público sempre vira PACIENTE (não aceita cargo escolhido pelo cliente)
+        Cargo cargo = cargoRepository.findByNome("PACIENTE")
+                .orElseThrow(() -> new ResourceNotFoundException("Cargo PACIENTE não encontrado no sistema."));
 
         // 3. Monta e salva o Endereço
         Endereco endereco = new Endereco();
@@ -88,7 +90,7 @@ public class UsuarioService {
     @Transactional(readOnly = true)
     public UsuarioResponseDTO buscarPorPublicId(UUID publicId) {
         Usuario usuario = usuarioRepository.findByPublicId(publicId)
-                .orElseThrow(() -> new IllegalArgumentException("Usuário não encontrado com o ID informado."));
+                .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado com o ID informado."));
         return converterParaResponseDTO(usuario);
     }
 

@@ -16,16 +16,13 @@ import java.util.Date;
 @Service
 public class TokenService {
 
-    // Chave secreta configurada no application.properties ou fallback para desenvolvimento
     @Value("${api.security.token.secret:sua-chave-secreta-super-segura-de-32-caracteres-aqui}")
     private String secret;
 
-    // Tempo de expiração em segundos (24 horas = 86400 segundos)
     private static final long EXPIRATION_IN_SECONDS = 86400;
 
-    /**
-     * Gera um token JWT assinado contendo o e-mail, publicId e cargo do usuário.
-     */
+    public record TokenData(String email, String publicId, String cargo) {}
+
     public String gerarToken(Usuario usuario) {
         SecretKey key = getSigningKey();
 
@@ -40,23 +37,33 @@ public class TokenService {
     }
 
     /**
-     * Valida o token e retorna o e-mail (subject) contido nele.
+     * Valida o token e retorna os claims principais.
      * Retorna null se o token for inválido ou estiver expirado.
      */
-    public String validarTokenEObterSubject(String token) {
+    public TokenData validarToken(String token) {
         try {
-            SecretKey key = getSigningKey();
-
-            Claims claims = Jwts.parser()
-                    .verifyWith(key)
-                    .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
-
-            return claims.getSubject();
+            Claims claims = parseClaims(token);
+            return new TokenData(
+                    claims.getSubject(),
+                    claims.get("publicId", String.class),
+                    claims.get("cargo", String.class)
+            );
         } catch (JwtException | IllegalArgumentException e) {
-            return null; // Token expirado, adulterado ou inválido
+            return null;
         }
+    }
+
+    public String validarTokenEObterSubject(String token) {
+        TokenData data = validarToken(token);
+        return data != null ? data.email() : null;
+    }
+
+    private Claims parseClaims(String token) {
+        return Jwts.parser()
+                .verifyWith(getSigningKey())
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
     }
 
     private SecretKey getSigningKey() {

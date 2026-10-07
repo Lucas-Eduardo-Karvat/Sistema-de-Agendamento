@@ -28,9 +28,6 @@ public record UsuarioCadastroRequestDTO(
     @Past(message = "Data de nascimento deve ser no passado")
     LocalDate dataNascimento,
 
-    @NotNull(message = "ID do Cargo é obrigatório")
-    Long cargoId,
-
     @NotNull(message = "Endereço é obrigatório")
     @Valid
     EnderecoRequestDTO endereco
