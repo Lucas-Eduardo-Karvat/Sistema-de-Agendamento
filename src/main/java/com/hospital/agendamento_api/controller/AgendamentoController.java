@@ -10,6 +10,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/agendamentos")
@@ -37,5 +38,21 @@ public class AgendamentoController {
     public ResponseEntity<List<AgendamentoResponseDTO>> listarMeusAgendamentos(Authentication authentication) {
         String emailSolicitante = authentication.getName();
         return ResponseEntity.ok(agendamentoService.listarPorSolicitante(emailSolicitante));
+    }
+
+    @GetMapping("/{publicId}")
+    public ResponseEntity<AgendamentoResponseDTO> buscarPorPublicId(
+            @PathVariable UUID publicId,
+            Authentication authentication) {
+        String emailSolicitante = authentication.getName();
+        return ResponseEntity.ok(agendamentoService.buscarPorPublicId(publicId, emailSolicitante));
+    }
+
+    @PatchMapping("/{publicId}/cancelar")
+    public ResponseEntity<AgendamentoResponseDTO> cancelar(
+            @PathVariable UUID publicId,
+            Authentication authentication) {
+        String emailSolicitante = authentication.getName();
+        return ResponseEntity.ok(agendamentoService.cancelarPeloPaciente(publicId, emailSolicitante));
     }
 }
