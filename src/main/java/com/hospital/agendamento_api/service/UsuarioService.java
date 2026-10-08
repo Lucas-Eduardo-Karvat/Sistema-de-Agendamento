@@ -3,11 +3,13 @@ package com.hospital.agendamento_api.service;
 import com.hospital.agendamento_api.dto.*;
 import com.hospital.agendamento_api.entity.Cargo;
 import com.hospital.agendamento_api.entity.Endereco;
+import com.hospital.agendamento_api.entity.Paciente;
 import com.hospital.agendamento_api.entity.Usuario;
 import com.hospital.agendamento_api.exception.BusinessException;
 import com.hospital.agendamento_api.exception.ResourceNotFoundException;
 import com.hospital.agendamento_api.repository.CargoRepository;
 import com.hospital.agendamento_api.repository.EnderecoRepository;
+import com.hospital.agendamento_api.repository.PacienteRepository;
 import com.hospital.agendamento_api.repository.UsuarioRepository;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -23,15 +25,18 @@ public class UsuarioService {
     private final UsuarioRepository usuarioRepository;
     private final CargoRepository cargoRepository;
     private final EnderecoRepository enderecoRepository;
+    private final PacienteRepository pacienteRepository; // Injetado
     private final PasswordEncoder passwordEncoder;
 
     public UsuarioService(UsuarioRepository usuarioRepository, 
                           CargoRepository cargoRepository, 
                           EnderecoRepository enderecoRepository,
+                          PacienteRepository pacienteRepository,
                           PasswordEncoder passwordEncoder) {
         this.usuarioRepository = usuarioRepository;
         this.cargoRepository = cargoRepository;
         this.enderecoRepository = enderecoRepository;
+        this.pacienteRepository = pacienteRepository;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -45,7 +50,7 @@ public class UsuarioService {
             throw new BusinessException("Já existe um usuário cadastrado com este E-mail.");
         }
 
-        // 2. Cadastro público sempre vira PACIENTE (não aceita cargo escolhido pelo cliente)
+        // 2. Busca o cargo PACIENTE
         Cargo cargo = cargoRepository.findByNome("PACIENTE")
                 .orElseThrow(() -> new ResourceNotFoundException("Cargo PACIENTE não encontrado no sistema."));
 
@@ -65,10 +70,7 @@ public class UsuarioService {
         usuario.setNome(dto.nome());
         usuario.setCpf(dto.cpf());
         usuario.setEmail(dto.email());
-        
-        // CRIPTOGRAFIA ATIVADA: Criptografa a senha com BCrypt antes de salvar no PostgreSQL
         usuario.setSenhaHash(passwordEncoder.encode(dto.senha()));
-        
         usuario.setTelefone(dto.telefone());
         usuario.setDataNascimento(dto.dataNascimento());
         usuario.setCargo(cargo);
@@ -76,6 +78,17 @@ public class UsuarioService {
         usuario.setAtivo(true);
 
         usuario = usuarioRepository.save(usuario);
+
+        // 5. CRIAÇÃO DO PACIENTE TITULAR (Garante consistência hospitalar)
+        Paciente pacienteTitular = new Paciente();
+        pacienteTitular.setUsuarioResponsavel(usuario);
+        pacienteTitular.setNome(usuario.getNome());
+        pacienteTitular.setCpf(usuario.getCpf());
+        pacienteTitular.setDataNascimento(usuario.getDataNascimento());
+        pacienteTitular.setParentesco("TITULAR");
+        pacienteTitular.setConvenio("Particular"); // Padrão inicial caso não venha no cadastro
+
+        pacienteRepository.save(pacienteTitular);
 
         return converterParaResponseDTO(usuario);
     }

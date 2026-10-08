@@ -10,7 +10,6 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/agendamentos")
@@ -27,17 +26,16 @@ public class AgendamentoController {
     public ResponseEntity<AgendamentoResponseDTO> criar(
             @Valid @RequestBody AgendamentoRequestDTO dto,
             Authentication authentication) {
-        
-        // Pega o publicId do usuário logado através do token JWT
-        UUID solicitantePublicId = UUID.fromString(authentication.getName());
-        
-        AgendamentoResponseDTO criado = agendamentoService.criarAgendamento(dto, solicitantePublicId);
+
+        String emailSolicitante = authentication.getName();
+        AgendamentoResponseDTO criado = agendamentoService.criarAgendamento(dto, emailSolicitante);
+
         return ResponseEntity.status(HttpStatus.CREATED).body(criado);
     }
 
     @GetMapping("/meus-agendamentos")
     public ResponseEntity<List<AgendamentoResponseDTO>> listarMeusAgendamentos(Authentication authentication) {
-        UUID solicitantePublicId = UUID.fromString(authentication.getName());
-        return ResponseEntity.ok(agendamentoService.listarPorSolicitante(solicitantePublicId));
+        String emailSolicitante = authentication.getName();
+        return ResponseEntity.ok(agendamentoService.listarPorSolicitante(emailSolicitante));
     }
 }

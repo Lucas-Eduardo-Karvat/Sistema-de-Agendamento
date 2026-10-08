@@ -6,7 +6,7 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 public record AgendamentoRequestDTO(
-    @NotNull(message = "O ID do paciente é obrigatório")
+    // Opcional: nulo indica que o exame é para o titular logado
     UUID pacientePublicId,
 
     @NotNull(message = "O ID do exame é obrigatório")

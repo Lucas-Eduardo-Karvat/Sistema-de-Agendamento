@@ -14,7 +14,10 @@ public interface AgendamentoRepository extends JpaRepository<Agendamento, Long> 
 
     @Query("SELECT a FROM Agendamento a WHERE a.solicitante.publicId = :publicId")
     List<Agendamento> findBySolicitantePublicId(@Param("publicId") UUID publicId);
+    
 
     @Query("SELECT a FROM Agendamento a WHERE a.paciente.publicId = :publicId")
     List<Agendamento> findByPacientePublicId(@Param("publicId") UUID publicId);
+    
+    
 }

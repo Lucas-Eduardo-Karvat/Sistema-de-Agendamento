@@ -15,7 +15,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-import java.util.UUID;
 
 @Service
 public class AgendamentoService {
@@ -36,26 +35,24 @@ public class AgendamentoService {
     }
 
     @Transactional
-    public AgendamentoResponseDTO criarAgendamento(AgendamentoRequestDTO dto, UUID solicitantePublicId) {
-        // 1. Busca o usuário logado (solicitante)
-        Usuario solicitante = usuarioRepository.findByPublicId(solicitantePublicId)
-                .orElseThrow(() -> new ResourceNotFoundException("Solicitante não encontrado"));
+    public AgendamentoResponseDTO criarAgendamento(AgendamentoRequestDTO dto, String emailSolicitante) {
+        // Busca o usuário logado via e-mail retornado pelo JWT
+        Usuario solicitante = usuarioRepository.findByEmail(emailSolicitante)
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitante não encontrado para o e-mail informado"));
 
-        // 2. Busca o paciente (se enviado UUID usa o informado, senão busca o TITULAR do solicitante)
+        // Se o pacientePublicId não for enviado no JSON, usa o paciente TITULAR do solicitante
         Paciente paciente;
         if (dto.pacientePublicId() != null) {
             paciente = pacienteRepository.findByPublicId(dto.pacientePublicId())
                     .orElseThrow(() -> new ResourceNotFoundException("Paciente informado não encontrado"));
         } else {
             paciente = pacienteRepository.findByUsuarioResponsavelIdAndParentesco(solicitante.getId(), "TITULAR")
-                    .orElseThrow(() -> new ResourceNotFoundException("Cadastro de paciente titular não encontrado para o usuário"));
+                    .orElseThrow(() -> new ResourceNotFoundException("Paciente titular não encontrado para este usuário"));
         }
 
-        // 3. Busca o exame
         Exame exame = exameRepository.findByPublicId(dto.examePublicId())
                 .orElseThrow(() -> new ResourceNotFoundException("Exame não encontrado"));
 
-        // 4. Cria e persiste a entidade
         Agendamento agendamento = new Agendamento();
         agendamento.setSolicitante(solicitante);
         agendamento.setPaciente(paciente);
@@ -72,8 +69,11 @@ public class AgendamentoService {
     }
 
     @Transactional(readOnly = true)
-    public List<AgendamentoResponseDTO> listarPorSolicitante(UUID solicitantePublicId) {
-        return agendamentoRepository.findBySolicitantePublicId(solicitantePublicId)
+    public List<AgendamentoResponseDTO> listarPorSolicitante(String emailSolicitante) {
+        Usuario solicitante = usuarioRepository.findByEmail(emailSolicitante)
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitante não encontrado"));
+
+        return agendamentoRepository.findBySolicitantePublicId(solicitante.getPublicId())
                 .stream()
                 .map(this::mapearParaDTO)
                 .toList();
