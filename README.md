@@ -839,3 +839,554 @@ A resposta deve ser um array JSON `[]` com código HTTP `200 OK`.
 1. Concluir o `SecurityFilter.java` no backend para fechar a camada de proteção HTTP.
 2. Adicionar o cabeçalho de CORS `@CrossOrigin` nos Controllers do Spring Boot.
 3. Expandir o frontend construindo os painéis de agendamentos e listagens consumindo os DTOs documentados neste relatório.
+
+Aqui está a documentação técnica detalhada e completa de todas as funcionalidades, regras de negócio, estrutura de dados e fluxos construídos após as etapas iniciais de autenticação (`/api/auth/login` e `/api/auth/registrar`).
+
+---
+
+## 1. Gestão de Pacientes e Dependentes
+
+O modelo de domínio separa a conta de acesso (`Usuario`) das entidades físicas atendidas no hospital (`Paciente`). No momento do cadastro do usuário, o sistema cria automaticamente o registro do `Paciente` com parentesco `TITULAR`.
+
+### Estrutura de Relacionamento
+
+* **Titular:** Vinculado diretamente ao `Usuario` autenticado (`parentesco = "TITULAR"`).
+* **Dependente:** Registrado sob a responsabilidade do usuário (`parentesco = "FILHO"`, `"CONJUGE"`, `"MAE"`, `"PAI"`, etc.), mantendo a chave estrangeira `usuario_responsavel_id`.
+
+### Endpoints
+
+* **`POST /api/pacientes/dependentes`**
+* **Objetivo:** Cadastrar um dependente associado ao usuário logado.
+* **Payload (`DependenteRequestDTO`):** `nome`, `cpf`, `dataNascimento`, `parentesco`.
+* **Regras de Negócio:**
+* O e-mail do solicitante é extraído do token JWT.
+* Valida a duplicidade de CPF no banco de dados.
+* Gera um UUID público (`publicId`) exclusivo para o dependente.
+
+
+* **Resposta:** `201 Created` contendo os dados do dependente criado (`PacienteResponseDTO`).
+
+
+* **`GET /api/pacientes/meus-pacientes`**
+* **Objetivo:** Listar todos os pacientes associados à conta (Titular + Dependentes).
+* **Regras de Negócio:** Busca no banco por todos os registros onde `usuario_responsavel_id` é igual ao ID do usuário autenticado.
+* **Resposta:** `200 OK` com a lista de DTOs dos pacientes.
+
+
+
+---
+
+## 2. Módulo de Agendamento de Exames (Visão do Paciente)
+
+O agendamento funciona via modelo de **intenção/solicitação**: o paciente não agenda diretamente em um horário fixo, mas sugere **3 opções de datas/horários de preferência** para avaliação da recepção.
+
+### Arquitetura de 1 Exame por Agendamento
+
+Para evitar gargalos de logística (salas diferentes, preparos específicos e tempos de execução distintos), cada solicitação é estritamente individual:
+
+
+$$\text{1 Solicitação} = \text{1 Paciente} + \text{1 Exame} + \text{3 Sugestões de Data}$$
+
+### Endpoints
+
+* **`POST /api/agendamentos`**
+* **Objetivo:** Criar uma solicitação de agendamento.
+* **Payload (`AgendamentoRequestDTO`):** `pacientePublicId` (opcional), `examePublicId`, `dataOpcao1`, `dataOpcao2`, `dataOpcao3`, `observacao`.
+* **Regras de Negócio:**
+* **Identificação do Paciente:** Se `pacientePublicId` for informado, o sistema busca o dependente correspondente. Se for `null`, o sistema assume automaticamente o paciente `TITULAR` do usuário logado.
+* **Trava Anti-Duplicidade / Regra de Pendência Ativa:** O sistema executa a checagem no repositório via `existsByPacienteIdAndExameIdAndStatus(pacienteId, exameId, "PENDENTE")`. Se o paciente já possuir uma solicitação em status `PENDENTE` para o mesmo exame, a operação é bloqueada disparando `BusinessException` (`400 Bad Request`).
+* **Gravação:** O agendamento é salvo com status inicial `PENDENTE`.
+
+
+
+
+* **`GET /api/agendamentos/meus-agendamentos`**
+* **Objetivo:** Consultar o histórico de solicitações do usuário logado.
+* **Resposta:** Lista de DTOs contendo status, datas sugeridas, data confirmada (se houver) e observações.
+
+
+* **`GET /api/agendamentos/{publicId}`**
+* **Objetivo:** Buscar os detalhes de um agendamento específico.
+* **Regras de Negócio:** Filtra por `publicId` e garante que o agendamento pertence ao `solicitantePublicId` do usuário autenticado (segurança no nível de linha).
+
+
+* **`PATCH /api/agendamentos/{publicId}/cancelar`**
+* **Objetivo:** Permitir que o paciente cancele uma solicitação.
+* **Regras de Negócio:**
+* Não permite cancelar agendamentos já em status `CANCELADO` ou `REALIZADO`.
+* Altera o status para `CANCELADO`, liberando o paciente para realizar novas solicitações do mesmo exame se desejar.
+
+
+
+
+
+---
+
+## 3. Módulo de Atendimento e Recepção (Visão do Admin)
+
+O módulo administrativo gerencia a fila de triagem das solicitações e a alocação física da agenda do hospital.
+
+### Regra de Ouro da Agenda
+
+A reserva de horário **não é feita no status `PENDENTE**` (evitando bloqueio triplo indevido de vagas). O bloqueio de grade e a verificação de choque de horário ocorrem estritamente no momento da **confirmação pelo atendente**.
+
+### Endpoints
+
+* **`GET /api/admin/agendamentos/pendentes`**
+* **Objetivo:** Retornar a fila de trabalho da recepção.
+* **Regras de Negócio:** Filtra todos os registros com status `PENDENTE`, ordenados de forma ascendente pela `dataCriacao` (ordem de chegada).
+
+
+* **`PATCH /api/admin/agendamentos/{publicId}/confirmar`**
+* **Objetivo:** Aprovar e efetivar a reserva do agendamento.
+* **Payload (`ConfirmarAgendamentoDTO`):** `dataConfirmada`.
+* **Regras de Negócio:**
+1. **Validação de Status:** Garante que o agendamento está `PENDENTE`.
+2. **Validação de Opções do Paciente:** O valor de `dataConfirmada` deve ser estritamente igual a `dataOpcao1`, `dataOpcao2` ou `dataOpcao3`.
+3. **Trava de Conflito de Horário (Choque de Agenda):** Executa a consulta no repositório:
+
+$$\text{Conflito} = \text{Exame ID} \land \text{Status} = \text{'CONFIRMADO'} \land \text{Data Confirmada} = \text{Data Escolhida}$$
+
+
+
+Se retornar `true`, a confirmação é bloqueada com mensagem de erro de horário ocupado.
+4. **Efetivação:** Define a `dataConfirmada`, altera o status para `CONFIRMADO` e persiste na base.
+
+
+
+
+* **`PATCH /api/admin/agendamentos/{publicId}/recusar`**
+* **Objetivo:** Indeferir uma solicitação de agendamento.
+* **Payload (`RecusarAgendamentoDTO`):** `motivoRecusa`.
+* **Regras de Negócio:** Altera o status para `RECUSADO` e anexa a justificativa no campo de observação.
+
+
+
+---
+
+## 4. Tabela Consolidada do Módulo de Dados e Status
+
+### Ciclo de Vida do Status do Agendamento
+
+| Status | Origem | Descrição |
+| --- | --- | --- |
+| `PENDENTE` | Sistema (`POST /agendamentos`) | Solicitação criada pelo paciente aguardando análise da recepção. |
+| `CONFIRMADO` | Atendente (`PATCH /confirmar`) | Vaga garantida na agenda com `dataConfirmada` preenchida. |
+| `RECUSADO` | Atendente (`PATCH /recusar`) | Solicitação negada pela recepção com justificativa registrada. |
+| `CANCELADO` | Paciente (`PATCH /cancelar`) | Solicitação anulada pelo próprio usuário. |
+| `REALIZADO` | Sistema / Recepção | Exame concluído (status final). |
+
+---
+
+## 5. Mapeamento de Exceções e Respostas da API
+
+* **`BusinessException` (`400 Bad Request`):** Disparada em violações de regra de negócio (ex: tentativa de criar agendamento pendente duplicado, confirmação com data diferente das 3 opções, ou choque de horário na agenda).
+* **`ResourceNotFoundException` (`404 Not Found`):** Disparada quando UUIDs de usuários, pacientes, exames ou agendamentos não são localizados na base.
+* **`MethodArgumentNotValidException` (`400 Bad Request`):** Disparada automaticamente pelo Spring Validation em payloads com campos nulos ou em branco.
+Aqui está a especificação técnica focada no **Front-end (React / Next.js / Vue)**. Ela cobre os estados Globais, telas, fluxos de navegação, formulários e integração direta com a API que foi construída.
+
+---
+
+## 1. Mapeamento de Telas por Perfil de Usuário
+
+### Perfil: Paciente / Cliente
+
+```
+[Login / Cadastro] ──> [Dashboard do Paciente]
+                             │
+                             ├──> [Meus Pacientes / Dependentes] ──> (Modal: Novo Dependente)
+                             │
+                             ├──> [Novo Agendamento (Wizard)]
+                             │        ├── Passo 1: Selecionar Paciente (Titular ou Dependente)
+                             │        ├── Passo 2: Escolher Exame
+                             │        └── Passo 3: Escolher 3 Opções de Data/Hora
+                             │
+                             └──> [Meus Agendamentos (Listagem)]
+                                      └──> (Modal / Drawer: Detalhes do Agendamento + Botão Cancelar)
+
+```
+
+---
+
+### Perfil: Atendente / Recepção (Admin)
+
+```
+[Login Admin] ──> [Painel de Recepção / Fila de Triagem]
+                        │
+                        ├──> [Aba: Solicitações Pendentes] ──> (Drawer de Decisão)
+                        │                                          ├── Botão: Confirmar (Select de 1 das 3 datas)
+                        │                                          └── Botão: Recusar (Input: Motivo)
+                        │
+                        └──> [Aba: Agenda Confirmada / Grade de Exames]
+
+```
+
+---
+
+## 2. Estrutura de Estado e Dados no Front-end
+
+### DTOs Mapeados para Interfaces TypeScript (`src/types/index.ts`)
+
+```typescript
+export type StatusAgendamento = 'PENDENTE' | 'CONFIRMADO' | 'RECUSADO' | 'CANCELADO' | 'REALIZADO';
+
+export interface Paciente {
+  publicId: string;
+  nome: string;
+  cpf: string;
+  dataNascimento: string;
+  parentesco: 'TITULAR' | 'FILHO' | 'CONJUGE' | 'MAE' | 'PAI' | 'OUTRO';
+}
+
+export interface Agendamento {
+  publicId: string;
+  pacientePublicId: string;
+  solicitantePublicId: string;
+  examePublicId: string;
+  status: StatusAgendamento;
+  dataOpcao1: string; // ISO 8601 string
+  dataOpcao2: string;
+  dataOpcao3: string;
+  dataConfirmada?: string;
+  observacao?: string;
+  dataCriacao: string;
+}
+
+export interface AgendamentoRequestDTO {
+  pacientePublicId?: string; // Se nulo, backend assume o Titular
+  examePublicId: string;
+  dataOpcao1: string;
+  dataOpcao2: string;
+  dataOpcao3: string;
+  observacao?: string;
+}
+
+```
+
+---
+
+## 3. Especificação de Componentes e Comportamento Visual
+
+### Tela 1: Form de Novo Agendamento (Visão Paciente)
+
+**Comportamento do Formulário:**
+
+1. **Seleção do Paciente:** Um `<select>` ou radio card alimentado pelo endpoint `GET /api/pacientes/meus-pacientes`. Mostra "Para mim (Titular)" ou o nome do dependente (ex: "Lucas (Filho)").
+2. **Seleção de Data e Hora:** 3 inputs de `<input type="datetime-local" />`.
+* **Validação de Front-end:** Impede a escolha de datas passadas (`min = new Date()`) e valida se a `dataOpcao2` e `dataOpcao3` são diferentes entre si.
+
+
+3. **Tratamento do Botão Enviar (Anti-Spam de Cliques):**
+* Desabilita o botão imediatamente no clique (`disabled={loading}`) e exibe um spinner.
+* Se a API retornar `400 Bad Request` com a mensagem *"Já existe uma solicitação pendente..."*, exibe um **Alert / Toast de Aviso (Amarelo)**: *"Você já possui um pedido em análise para este exame. Cancele o anterior para enviar um novo."* com botão rápido redirecionando para a aba "Meus Agendamentos".
+
+
+
+---
+
+### Tela 2: Fila de Triagem da Recepção (Visão Admin)
+
+**Layout Recomendado:** Tabela ou lista de cards filtráveis ordenados por ordem de chegada (`GET /api/admin/agendamentos/pendentes`).
+
+| Paciente / Solicitante | Exame | Opções Sugeridas pelo Paciente | Ações |
+| --- | --- | --- | --- |
+| **João Silva** *(Dependente)*<br>
+
+<br>`Resp: Maria Silva` | Hemograma Completo | **Opção 1:** 20/10/2026 08:00<br>
+
+<br>**Opção 2:** 21/10/2026 09:00<br>
+
+<br>**Opção 3:** 22/10/2026 10:00 | `<Button variant="success">` Analisar / Aprovar<br>
+
+<br>`<Button variant="danger">` Recusar |
+
+**Modal de Confirmação pelo Atendente:**
+Ao clicar em "Analisar", abre um Modal com os detalhes do pedido:
+
+1. O atendente vê os 3 radio buttons correspondentes às 3 datas exatas enviadas pelo paciente.
+2. O atendente seleciona UMA das datas e clica em **"Efetivar Agendamento"**.
+3. **Tratamento de Conflito no Front-end:**
+* Se a API retornar `400 Bad Request` (*"Este horário já está ocupado por outro agendamento confirmado"*), o Modal **não fecha** e exibe um toast de Erro: *"Horário ocupado na grade do exame. Selecione outra das opções enviadas pelo paciente."*
+
+
+
+---
+
+## 4. Gestão de Rotas e Segurança de Acesso no Front-end
+
+Configuração de navegação baseada nas *roles* extraídas do Token JWT (`ROLE_USER`, `ROLE_ADMIN`, `ROLE_RECEPCAO`):
+
+```typescript
+// Exemplo de Proteção de Rota em React Router
+const PrivateRoute = ({ allowedRoles }: { allowedRoles: string[] }) => {
+  const { user, token } = useAuth();
+
+  if (!token) return <Navigate to="/login" replace />;
+  if (!allowedRoles.includes(user.role)) return <Navigate to="/unauthorized" replace />;
+
+  return <Outlet />;
+};
+
+```
+
+| Rota Front-end | Roles Permitidas | Componente / Tela |
+| --- | --- | --- |
+| `/agendamentos/novo` | `ROLE_USER` | Form de Solicitação de Exames |
+| `/meus-agendamentos` | `ROLE_USER` | Histórico e Cancelamento pelo Paciente |
+| `/dependentes` | `ROLE_USER` | Cadastro e Listagem de Dependentes |
+| `/admin/pendentes` | `ROLE_ADMIN`, `ROLE_RECEPCAO` | Fila de Triagem e Confirmação de Grade |
+
+---
+
+## 5. Estados Globais e Interceptadores (Axios / Fetch)
+
+Para o front-end funcionar sem falhas com o Spring Boot:
+
+1. **Request Interceptor:** Anexa o token `Bearer <token>` no header `Authorization` de toda requisição enviada.
+2. **Response Interceptor (Erro 401/403):** Se o token expirar, limpa o `localStorage` e redireciona o usuário automaticamente para a tela de `/login`.
+3. **Tratamento de Mensagens de Erro Padrão:** O front-end deve ler a chave `message` enviada pelo `RestExceptionHandler` da API Spring para alimentar os Toasts/Alerts visuais da tela.
+
+Aqui está a **especificação técnica completa de integração Front-end <-> Back-end** com o fluxo de autenticação, o ciclo de vida das requisições, os contratos das rotas e o tratamento de estados.
+
+---
+
+## 1. Arquitetura de Comunicação e Segurança
+
+### Fluxo do Token JWT
+
+1. O usuário se autentica na rota `/api/auth/login`.
+2. O backend retorna o token JWT e o perfil (`ROLE_USER` ou `ROLE_ADMIN`/`ROLE_RECEPCAO`).
+3. O front-end armazena o token (em `localStorage`, `sessionStorage` ou `Cookies`) e o insere no header de todas as chamadas protegidas:
+`Authorization: Bearer <TOKEN_JWT>`
+
+### Configuração do Cliente HTTP (Exemplo com Axios)
+
+```javascript
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: 'http://localhost:8080/api',
+});
+
+// Interceptor de Requisição: Injeta o Token automaticamente
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Interceptor de Resposta: Trata sessão expirada e erros de validação
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+
+```
+
+---
+
+## 2. Guia Completo das Rotas da API
+
+### Módulo 1: Autenticação (`/api/auth`)
+
+| Método | Endpoint | Descrição | Envio no Body | Resposta de Sucesso |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/auth/login` | Login do usuário | `{ email, senha }` | `200 OK` → `{ token, role }` |
+| `POST` | `/api/auth/registrar` | Novo cadastro | `{ nome, email, senha, cpf, dataNascimento }` | `201 Created` → `{ id, publicId, email }` |
+
+> **Nota do Front-end:** Ao registrar um novo usuário, o Spring Boot gera automaticamente a conta de acesso (`Usuario`) e a entidade do paciente principal com `parentesco = "TITULAR"`.
+
+---
+
+### Módulo 2: Pacientes e Dependentes (`/api/pacientes`)
+
+#### 1. Cadastrar Dependente
+
+* **Método/Rota:** `POST /api/pacientes/dependentes`
+* **Headers:** `Authorization: Bearer <TOKEN>`
+* **Body (JSON):**
+```json
+{
+  "nome": "Pedro Silva",
+  "cpf": "123.456.789-00",
+  "dataNascimento": "2015-05-20",
+  "parentesco": "FILHO"
+}
+
+```
+
+
+* **Comportamento no Front:** Abre num modal ou formulário secundário. Após a resposta `201 Created`, atualiza a lista local de dependentes.
+
+#### 2. Listar Meus Pacientes (Titular + Dependentes)
+
+* **Método/Rota:** `GET /api/pacientes/meus-pacientes`
+* **Headers:** `Authorization: Bearer <TOKEN>`
+* **Resposta de Sucesso (`200 OK`):**
+```json
+[
+  {
+    "publicId": "a1b2c3d4-0000-0000-0000-000000000001",
+    "nome": "João Silva (Você)",
+    "cpf": "000.000.000-00",
+    "dataNascimento": "1990-01-01",
+    "parentesco": "TITULAR"
+  },
+  {
+    "publicId": "b2c3d4e5-1111-1111-1111-111111111112",
+    "nome": "Pedro Silva",
+    "cpf": "123.456.789-00",
+    "dataNascimento": "2015-05-20",
+    "parentesco": "FILHO"
+  }
+]
+
+```
+
+
+* **Comportamento no Front:** Alimenta o `<select>` ou os cards de escolha de paciente na tela de criação de agendamento.
+
+---
+
+### Módulo 3: Agendamentos — Visão do Paciente (`/api/agendamentos`)
+
+#### 1. Solagendar / Criar Solicitação
+
+* **Método/Rota:** `POST /api/agendamentos`
+* **Body (JSON):**
+```json
+{
+  "pacientePublicId": "b2c3d4e5-1111-1111-1111-111111111112", // Opcional (se null, backend assume o Titular)
+  "examePublicId": "f9e8d7c6-5555-5555-5555-555555555555",
+  "dataOpcao1": "2026-10-25T08:00:00Z",
+  "dataOpcao2": "2026-10-26T09:30:00Z",
+  "dataOpcao3": "2026-10-27T14:00:00Z",
+  "observacao": "Jejum de 8h necessário."
+}
+
+```
+
+
+* **Respostas HTTP Possíveis:**
+* `201 Created`: Solicitado com sucesso (status entra como `PENDENTE`).
+* `400 Bad Request`: Disparado pela trava anti-duplicidade. Exibe a mensagem da API em um Alert: *"O paciente já possui uma solicitação pendente para este exame. Aguarde a análise da recepção..."*
+
+
+
+#### 2. Listar Meus Agendamentos
+
+* **Método/Rota:** `GET /api/agendamentos/meus-agendamentos`
+* **Resposta de Sucesso (`200 OK`):**
+```json
+[
+  {
+    "publicId": "c3d4e5f6-2222-2222-2222-222222222223",
+    "pacientePublicId": "b2c3d4e5-1111-1111-1111-111111111112",
+    "solicitantePublicId": "a1b2c3d4-0000-0000-0000-000000000001",
+    "examePublicId": "f9e8d7c6-5555-5555-5555-555555555555",
+    "status": "PENDENTE",
+    "dataOpcao1": "2026-10-25T08:00:00Z",
+    "dataOpcao2": "2026-10-26T09:30:00Z",
+    "dataOpcao3": "2026-10-27T14:00:00Z",
+    "dataConfirmada": null,
+    "observacao": "Jejum de 8h.",
+    "dataCriacao": "2026-10-07T22:00:00Z"
+  }
+]
+
+```
+
+
+
+#### 3. Buscar Detalhes por UUID
+
+* **Método/Rota:** `GET /api/agendamentos/{publicId}`
+* **Comportamento no Front:** Usado para abrir a tela/modal com os detalhes e opções de data de um agendamento específico.
+
+#### 4. Cancelar Agendamento pelo Paciente
+
+* **Método/Rota:** `PATCH /api/agendamentos/{publicId}/cancelar`
+* **Body:** Vazio
+* **Comportamento no Front:** Altera o status local para `CANCELADO` e habilita novamente o botão para nova solicitação daquele exame.
+
+---
+
+### Módulo 4: Recepção e Admin (`/api/admin/agendamentos`)
+
+*Exige Token JWT com perfil `ROLE_ADMIN` ou `ROLE_RECEPCAO`.*
+
+#### 1. Fila de Solicitações Pendentes
+
+* **Método/Rota:** `GET /api/admin/agendamentos/pendentes`
+* **Comportamento no Front:** Alimenta a tabela principal da recepção. Exibe a ordem de chegada das solicitações em status `PENDENTE`.
+
+#### 2. Confirmar Agendamento (Reserva da Grade)
+
+* **Método/Rota:** `PATCH /api/admin/agendamentos/{publicId}/confirmar`
+* **Body (JSON):**
+```json
+{
+  "dataConfirmada": "2026-10-25T08:00:00Z"
+}
+
+```
+
+
+* **Regra do Front:** O componente de confirmação exibe um `<select>` ou 3 botões contendo **exclusivamente as 3 opções** que vieram no objeto do agendamento (`dataOpcao1`, `dataOpcao2` e `dataOpcao3`). O atendente escolhe uma delas e envia.
+* **Tratamento de Erro (`400 Bad Request`):** Se a API retornar erro de choque de agenda (*"Este horário já está ocupado..."*), exibe o aviso em vermelho no modal sem fechá-lo, para que o atendente selecione outra das 3 opções.
+
+#### 3. Recusar Agendamento
+
+* **Método/Rota:** `PATCH /api/admin/agendamentos/{publicId}/recusar`
+* **Body (JSON):**
+```json
+{
+  "motivoRecusa": "Setor de tomografia em manutenção no período solicitado."
+}
+
+```
+
+
+
+---
+
+## 3. Matriz de Estados e Renderização de UI
+
+O front-end deve reagir ao campo `status` retornado nos objetos de agendamento conforme a tabela:
+
+| Status vindo da API | Cor do Badge na UI | Ações Permitidas para o Paciente | Ações Permitidas para a Recepção |
+| --- | --- | --- | --- |
+| **`PENDENTE`** | Amarelo / Warning | Botão "Cancelar Solicitação" | Botões "Aprovar" e "Recusar" |
+| **`CONFIRMADO`** | Verde / Success | Exibe a data final em destaque | Exibe detalhes do agendamento fixado |
+| **`RECUSADO`** | Vermelho / Danger | Exibe o motivo da recusa | Apenas leitura no histórico |
+| **`CANCELADO`** | Cinza / Secondary | Botão "Solicitar Novamente" | Apenas leitura no histórico |
+
+---
+
+## 4. Fluxo Completo de Integração (Passo a Passo)
+
+1. **Paciente faz Login:** Guarda o Token e redireciona para `/agendamentos`.
+2. **Abre Form de Agendamento:**
+* Executa `GET /api/pacientes/meus-pacientes` para preencher o select de paciente.
+* Executa `GET /api/exames` (se houver rota pública/autenticada) para preencher a lista de exames.
+
+
+3. **Envia o Form:** `POST /api/agendamentos` com as 3 opções.
+4. **Atendente entra no Painel:**
+* Redirecionado para `/admin/pendentes`.
+* Executa `GET /api/admin/agendamentos/pendentes`.
+* Clica em "Confirmar" em um item, escolhe a `dataOpcao1` e dispara `PATCH /api/admin/agendamentos/{id}/confirmar`.
+
+
+5. **Atualização em Tempo Real / Re-fetch:**
+* Ao fechar o modal, chama novamente o `GET` das rotas para manter as tabelas atualizadas.
