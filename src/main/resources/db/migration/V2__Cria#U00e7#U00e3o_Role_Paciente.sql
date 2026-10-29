@@ -1,0 +1,1 @@
+INSERT INTO cargos (nome) VALUES ('PACIENTE');
