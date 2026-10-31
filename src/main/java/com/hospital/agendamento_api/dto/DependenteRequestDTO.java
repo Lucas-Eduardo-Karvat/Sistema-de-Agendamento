@@ -13,7 +13,7 @@ public record DependenteRequestDTO(
     @NotNull(message = "A data de nascimento é obrigatória")
     LocalDate dataNascimento,
 
-    @NotBlank(message = "O parentesco é obrigatório (ex: FILHO, MAE, CONJUGE)")
+    @NotBlank(message = "O parentesco é obrigatório (FILHO, CONJUGE, PAI_MAE ou OUTRO)")
     String parentesco,
 
     String convenio

@@ -2,6 +2,7 @@ package com.hospital.agendamento_api.service;
 
 import com.hospital.agendamento_api.dto.AgendamentoRequestDTO;
 import com.hospital.agendamento_api.dto.AgendamentoResponseDTO;
+import com.hospital.agendamento_api.dto.ReagendarAgendamentoRequestDTO;
 import com.hospital.agendamento_api.entity.Agendamento;
 import com.hospital.agendamento_api.entity.Exame;
 import com.hospital.agendamento_api.entity.Paciente;
@@ -47,6 +48,12 @@ public class AgendamentoService {
                         paciente = pacienteRepository.findByPublicId(dto.pacientePublicId())
                                         .orElseThrow(() -> new ResourceNotFoundException(
                                                         "Paciente informado não encontrado"));
+
+                        // Só pode agendar para si mesmo ou para os próprios dependentes (ainda não removidos)
+                        if (!paciente.getUsuarioResponsavel().getId().equals(solicitante.getId())
+                                        || !Boolean.TRUE.equals(paciente.getAtivo())) {
+                                throw new ResourceNotFoundException("Paciente informado não encontrado");
+                        }
                 } else {
                         paciente = pacienteRepository
                                         .findByUsuarioResponsavelIdAndParentesco(solicitante.getId(), "TITULAR")
@@ -83,6 +90,55 @@ public class AgendamentoService {
                 Agendamento salvo = agendamentoRepository.save(agendamento);
 
                 return mapearParaDTO(salvo);
+        }
+
+        /**
+         * Reagendamento feito pelo paciente: cria uma nova solicitação (PENDENTE) para o mesmo exame e o mesmo
+         * paciente, com as novas datas, e apaga o agendamento antigo. Tudo na mesma transação: se algo falhar,
+         * o agendamento antigo continua como estava.
+         */
+        @Transactional
+        public AgendamentoResponseDTO reagendar(UUID agendamentoPublicId,
+                        ReagendarAgendamentoRequestDTO dto,
+                        String emailSolicitante) {
+                Usuario solicitante = usuarioRepository.findByEmail(emailSolicitante)
+                                .orElseThrow(() -> new ResourceNotFoundException(
+                                                "Solicitante não encontrado para o e-mail informado"));
+                Agendamento antigo = agendamentoRepository
+                                .findByPublicIdAndSolicitantePublicId(agendamentoPublicId, solicitante.getPublicId())
+                                .orElseThrow(() -> new ResourceNotFoundException(
+                                                "Agendamento não encontrado para este usuário"));
+                if ("CONCLUIDO".equalsIgnoreCase(antigo.getStatus())) {
+                        throw new BusinessException(
+                                        "Exames já realizados não podem ser reagendados. Faça uma nova solicitação.");
+                }
+                Paciente paciente = antigo.getPaciente();
+                if (!Boolean.TRUE.equals(paciente.getAtivo())) {
+                        throw new ResourceNotFoundException("Agendamento não encontrado para este usuário");
+                }
+                Exame exame = antigo.getExame();
+
+                // Apaga o antigo antes de checar pendências: se ele era o pendente, não conta contra o novo
+                agendamentoRepository.delete(antigo);
+                agendamentoRepository.flush();
+
+                if (agendamentoRepository.existsByPacienteIdAndExameIdAndStatus(paciente.getId(), exame.getId(),
+                                "PENDENTE")) {
+                        throw new BusinessException(
+                                        "O paciente já possui outra solicitação pendente para este exame. "
+                                                        + "Aguarde a análise da recepção ou cancele-a antes de reagendar.");
+                }
+
+                Agendamento novo = new Agendamento();
+                novo.setSolicitante(solicitante);
+                novo.setPaciente(paciente);
+                novo.setExame(exame);
+                novo.setStatus("PENDENTE");
+                novo.setDataOpcao1(dto.dataOpcao1());
+                novo.setDataOpcao2(dto.dataOpcao2());
+                novo.setDataOpcao3(dto.dataOpcao3());
+                novo.setObservacao(dto.observacao());
+                return mapearParaDTO(agendamentoRepository.save(novo));
         }
 
         @Transactional(readOnly = true)
@@ -124,8 +180,11 @@ public class AgendamentoService {
                 if ("CANCELADO".equalsIgnoreCase(agendamento.getStatus())) {
                         throw new BusinessException("Este agendamento já está cancelado.");
                 }
-                if ("REALIZADO".equalsIgnoreCase(agendamento.getStatus())) {
+                if ("CONCLUIDO".equalsIgnoreCase(agendamento.getStatus())) {
                         throw new BusinessException("Não é possível cancelar um agendamento já realizado.");
+                }
+                if ("RECUSADO".equalsIgnoreCase(agendamento.getStatus())) {
+                        throw new BusinessException("Este agendamento foi recusado e não pode ser cancelado.");
                 }
 
                 agendamento.setStatus("CANCELADO");
@@ -135,17 +194,6 @@ public class AgendamentoService {
         }
 
         private AgendamentoResponseDTO mapearParaDTO(Agendamento a) {
-                return new AgendamentoResponseDTO(
-                                a.getPublicId(),
-                                a.getPaciente().getPublicId(),
-                                a.getSolicitante().getPublicId(),
-                                a.getExame().getPublicId(),
-                                a.getStatus(),
-                                a.getDataOpcao1(),
-                                a.getDataOpcao2(),
-                                a.getDataOpcao3(),
-                                a.getDataConfirmada(),
-                                a.getObservacao(),
-                                a.getDataCriacao());
-        }
+        return AgendamentoMapper.toDTO(a);
+    }
 }

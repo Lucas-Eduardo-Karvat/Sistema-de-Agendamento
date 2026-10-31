@@ -44,6 +44,12 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/usuarios").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                // Área da recepção: só RECEPCIONISTA e ADMIN (o filtro monta a role como ROLE_<cargo>)
+                .requestMatchers("/api/recepcao/**").hasAnyRole("RECEPCIONISTA", "ADMIN")
+                // O próprio perfil é liberado para qualquer usuário autenticado (precisa vir antes da regra abaixo)
+                .requestMatchers(HttpMethod.GET, "/api/usuarios/me").authenticated()
+                // Dados de outros usuários (CPF, endereço...) não devem ser visíveis a qualquer paciente
+                .requestMatchers(HttpMethod.GET, "/api/usuarios/**").hasAnyRole("RECEPCIONISTA", "ADMIN")
                 .anyRequest().authenticated()
             )
             .exceptionHandling(ex -> ex

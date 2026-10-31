@@ -12,4 +12,5 @@ import java.util.UUID;
 public interface ExameRepository extends JpaRepository<Exame, Long> {
     Optional<Exame> findByPublicId(UUID publicId);
     List<Exame> findByAtivoTrue();
+    boolean existsByNomeIgnoreCase(String nome);
 }

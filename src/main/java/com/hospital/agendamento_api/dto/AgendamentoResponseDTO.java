@@ -14,5 +14,12 @@ public record AgendamentoResponseDTO(
     OffsetDateTime dataOpcao3,
     OffsetDateTime dataConfirmada,
     String observacao,
-    OffsetDateTime dataCriacao
+    OffsetDateTime dataCriacao,
+    String pacienteNome,
+    String exameNome,
+    String consultorio,
+    String pacienteCpf,
+    String pacienteTelefone,
+    String pacienteEmail,
+    OffsetDateTime alteradoEm
 ) {}

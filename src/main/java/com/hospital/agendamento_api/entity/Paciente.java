@@ -48,4 +48,7 @@ public class Paciente {
 
     @Column(columnDefinition = "TEXT")
     private String alergias;
+
+    @Column(nullable = false)
+    private Boolean ativo = true;
 }

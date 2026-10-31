@@ -2,6 +2,7 @@ package com.hospital.agendamento_api.controller;
 
 import com.hospital.agendamento_api.dto.AgendamentoRequestDTO;
 import com.hospital.agendamento_api.dto.AgendamentoResponseDTO;
+import com.hospital.agendamento_api.dto.ReagendarAgendamentoRequestDTO;
 import com.hospital.agendamento_api.service.AgendamentoService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -46,6 +47,16 @@ public class AgendamentoController {
             Authentication authentication) {
         String emailSolicitante = authentication.getName();
         return ResponseEntity.ok(agendamentoService.buscarPorPublicId(publicId, emailSolicitante));
+    }
+
+    // Reagendar: cria a nova solicitação com as novas datas e remove a anterior
+    @PostMapping("/{publicId}/reagendar")
+    public ResponseEntity<AgendamentoResponseDTO> reagendar(
+            @PathVariable UUID publicId,
+            @Valid @RequestBody ReagendarAgendamentoRequestDTO dto,
+            Authentication authentication) {
+        AgendamentoResponseDTO novo = agendamentoService.reagendar(publicId, dto, authentication.getName());
+        return ResponseEntity.status(HttpStatus.CREATED).body(novo);
     }
 
     @PatchMapping("/{publicId}/cancelar")

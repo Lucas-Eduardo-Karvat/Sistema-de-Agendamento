@@ -58,6 +58,9 @@ public class Agendamento {
     @Column(columnDefinition = "TEXT")
     private String observacao;
 
+    @Column(length = 100)
+    private String consultorio;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "alterado_por")
     private Usuario alteradoPor;

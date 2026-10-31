@@ -11,6 +11,7 @@ import com.hospital.agendamento_api.repository.CargoRepository;
 import com.hospital.agendamento_api.repository.EnderecoRepository;
 import com.hospital.agendamento_api.repository.PacienteRepository;
 import com.hospital.agendamento_api.repository.UsuarioRepository;
+import com.hospital.agendamento_api.security.TokenService;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -27,17 +28,20 @@ public class UsuarioService {
     private final EnderecoRepository enderecoRepository;
     private final PacienteRepository pacienteRepository; // Injetado
     private final PasswordEncoder passwordEncoder;
+    private final TokenService tokenService;
 
     public UsuarioService(UsuarioRepository usuarioRepository, 
                           CargoRepository cargoRepository, 
                           EnderecoRepository enderecoRepository,
                           PacienteRepository pacienteRepository,
-                          PasswordEncoder passwordEncoder) {
+                          PasswordEncoder passwordEncoder,
+                          TokenService tokenService) {
         this.usuarioRepository = usuarioRepository;
         this.cargoRepository = cargoRepository;
         this.enderecoRepository = enderecoRepository;
         this.pacienteRepository = pacienteRepository;
         this.passwordEncoder = passwordEncoder;
+        this.tokenService = tokenService;
     }
 
     @Transactional
@@ -48,6 +52,10 @@ public class UsuarioService {
         }
         if (usuarioRepository.existsByEmail(dto.email())) {
             throw new BusinessException("Já existe um usuário cadastrado com este E-mail.");
+        }
+        // O titular também vira "paciente", e o CPF de paciente é único (inclui dependentes de outras contas)
+        if (pacienteRepository.existsByCpfAndAtivoTrue(dto.cpf())) {
+            throw new BusinessException("Já existe um usuário cadastrado com este CPF.");
         }
 
         // 2. Busca o cargo PACIENTE
@@ -105,6 +113,71 @@ public class UsuarioService {
         Usuario usuario = usuarioRepository.findByPublicId(publicId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado com o ID informado."));
         return converterParaResponseDTO(usuario);
+    }
+
+    /** Dados do próprio usuário autenticado (usado pela tela de Perfil; não exige perfil de recepção). */
+    @Transactional(readOnly = true)
+    public UsuarioResponseDTO buscarPorEmail(String email) {
+        Usuario usuario = usuarioRepository.findByEmail(email)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado."));
+        return converterParaResponseDTO(usuario);
+    }
+
+    /** Atualiza os dados do próprio usuário. CPF e cargo não mudam. */
+    @Transactional
+    public PerfilAtualizadoResponseDTO atualizarPerfil(String emailAtual, PerfilUpdateRequestDTO dto) {
+        Usuario usuario = usuarioRepository.findByEmail(emailAtual)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado."));
+
+        String novoEmail = dto.email().trim();
+        boolean emailMudou = !novoEmail.equals(usuario.getEmail());
+        if (emailMudou && usuarioRepository.existsByEmail(novoEmail)) {
+            throw new BusinessException("Já existe um usuário cadastrado com este E-mail.");
+        }
+
+        usuario.setNome(dto.nome().trim());
+        usuario.setEmail(novoEmail);
+        usuario.setTelefone(dto.telefone());
+        usuario.setDataNascimento(dto.dataNascimento());
+
+        Endereco endereco = usuario.getEndereco();
+        endereco.setCep(dto.endereco().cep());
+        endereco.setLogradouro(dto.endereco().logradouro());
+        endereco.setNumero(dto.endereco().numero());
+        endereco.setComplemento(dto.endereco().complemento());
+        endereco.setBairro(dto.endereco().bairro());
+        endereco.setCidade(dto.endereco().cidade());
+        endereco.setEstado(dto.endereco().estado());
+
+        // Mantém o paciente titular em sincronia com o cadastro do usuário
+        pacienteRepository.findByUsuarioResponsavelIdAndParentesco(usuario.getId(), "TITULAR")
+                .ifPresent(titular -> {
+                    titular.setNome(usuario.getNome());
+                    titular.setDataNascimento(usuario.getDataNascimento());
+                    pacienteRepository.save(titular);
+                });
+
+        usuarioRepository.save(usuario);
+
+        // O e-mail é o "subject" do JWT: se mudou, o token antigo deixa de funcionar, então devolve um novo.
+        String novoToken = emailMudou ? tokenService.gerarToken(usuario) : null;
+        return new PerfilAtualizadoResponseDTO(converterParaResponseDTO(usuario), novoToken);
+    }
+
+    @Transactional
+    public void alterarSenha(String email, AlterarSenhaRequestDTO dto) {
+        Usuario usuario = usuarioRepository.findByEmail(email)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado."));
+
+        if (!passwordEncoder.matches(dto.senhaAtual(), usuario.getSenhaHash())) {
+            throw new BusinessException("A senha atual está incorreta.");
+        }
+        if (passwordEncoder.matches(dto.novaSenha(), usuario.getSenhaHash())) {
+            throw new BusinessException("A nova senha deve ser diferente da senha atual.");
+        }
+
+        usuario.setSenhaHash(passwordEncoder.encode(dto.novaSenha()));
+        usuarioRepository.save(usuario);
     }
 
     private UsuarioResponseDTO converterParaResponseDTO(Usuario usuario) {
