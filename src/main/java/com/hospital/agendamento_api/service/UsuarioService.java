@@ -18,6 +18,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -178,6 +180,103 @@ public class UsuarioService {
 
         usuario.setSenhaHash(passwordEncoder.encode(dto.novaSenha()));
         usuarioRepository.save(usuario);
+    }
+
+    // ------------------------------------------------------------------
+    // Painel administrativo (rotas /api/admin/usuarios, protegidas por ROLE_ADMIN no SecurityConfig)
+    // ------------------------------------------------------------------
+
+    private static final Set<String> CARGOS_ADMINISTRAVEIS = Set.of("ADMIN", "RECEPCIONISTA", "PACIENTE");
+
+    /** Reset administrativo de senha: não exige a senha antiga. */
+    @Transactional
+    public void redefinirSenhaAdmin(UUID publicId, AdminAlterarSenhaRequestDTO dto) {
+        Usuario usuario = buscarEntidadePorPublicId(publicId);
+        usuario.setSenhaHash(passwordEncoder.encode(dto.novaSenha()));
+        usuarioRepository.save(usuario);
+    }
+
+    /**
+     * Troca o cargo do usuário. Ao virar PACIENTE, garante que exista o registro de paciente TITULAR
+     * (sem ele o usuário não consegue agendar exames).
+     */
+    @Transactional
+    public UsuarioResponseDTO alterarCargoAdmin(UUID publicId, AlterarCargoRequestDTO dto, String emailAdmin) {
+        String nomeCargo = dto.nomeCargo().trim().toUpperCase();
+        if (!CARGOS_ADMINISTRAVEIS.contains(nomeCargo)) {
+            throw new BusinessException("Cargo inválido. Use: ADMIN, RECEPCIONISTA ou PACIENTE.");
+        }
+
+        Usuario usuario = buscarEntidadePorPublicId(publicId);
+        Cargo cargo = cargoRepository.findByNome(nomeCargo)
+                .orElseThrow(() -> new ResourceNotFoundException("Cargo " + nomeCargo + " não encontrado no sistema."));
+
+        // Evita que o admin se tranque para fora do painel
+        if (ehOMesmoUsuario(usuario, emailAdmin) && !"ADMIN".equals(nomeCargo)) {
+            throw new BusinessException("Você não pode remover o seu próprio acesso de administrador.");
+        }
+
+        if ("PACIENTE".equals(nomeCargo)) {
+            garantirPacienteTitular(usuario);
+        }
+
+        usuario.setCargo(cargo);
+        usuarioRepository.save(usuario);
+        return converterParaResponseDTO(usuario);
+    }
+
+    /** Ativa/desativa o usuário. Usuário inativo não consegue fazer login (ver AuthService). */
+    @Transactional
+    public UsuarioResponseDTO alterarStatusAdmin(UUID publicId, AlterarStatusUsuarioRequestDTO dto, String emailAdmin) {
+        Usuario usuario = buscarEntidadePorPublicId(publicId);
+
+        if (!dto.ativo() && ehOMesmoUsuario(usuario, emailAdmin)) {
+            throw new BusinessException("Você não pode desativar a sua própria conta.");
+        }
+
+        usuario.setAtivo(dto.ativo());
+        usuarioRepository.save(usuario);
+        return converterParaResponseDTO(usuario);
+    }
+
+    private Usuario buscarEntidadePorPublicId(UUID publicId) {
+        return usuarioRepository.findByPublicId(publicId)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado com o ID informado."));
+    }
+
+    private boolean ehOMesmoUsuario(Usuario usuario, String emailLogado) {
+        return emailLogado != null && usuario.getEmail().equalsIgnoreCase(emailLogado);
+    }
+
+    private void garantirPacienteTitular(Usuario usuario) {
+        Optional<Paciente> existente =
+                pacienteRepository.findByUsuarioResponsavelIdAndParentesco(usuario.getId(), "TITULAR");
+
+        if (existente.isPresent()) {
+            Paciente titular = existente.get();
+            if (!Boolean.TRUE.equals(titular.getAtivo())) {
+                // O CPF é único só entre pacientes ativos: confere antes de reativar
+                if (pacienteRepository.existsByCpfAndAtivoTrueAndIdNot(titular.getCpf(), titular.getId())) {
+                    throw new BusinessException("Já existe um paciente ativo com o CPF deste usuário.");
+                }
+                titular.setAtivo(true);
+                pacienteRepository.save(titular);
+            }
+            return;
+        }
+
+        if (pacienteRepository.existsByCpfAndAtivoTrue(usuario.getCpf())) {
+            throw new BusinessException("Já existe um paciente ativo com o CPF deste usuário.");
+        }
+
+        Paciente titular = new Paciente();
+        titular.setUsuarioResponsavel(usuario);
+        titular.setNome(usuario.getNome());
+        titular.setCpf(usuario.getCpf());
+        titular.setDataNascimento(usuario.getDataNascimento());
+        titular.setParentesco("TITULAR");
+        titular.setConvenio("Particular"); // mesmo padrão do auto-cadastro
+        pacienteRepository.save(titular);
     }
 
     private UsuarioResponseDTO converterParaResponseDTO(Usuario usuario) {

@@ -13,4 +13,7 @@ public interface ExameRepository extends JpaRepository<Exame, Long> {
     Optional<Exame> findByPublicId(UUID publicId);
     List<Exame> findByAtivoTrue();
     boolean existsByNomeIgnoreCase(String nome);
+
+    // Edição: o nome pode repetir o do próprio exame, mas não o de outro
+    boolean existsByNomeIgnoreCaseAndIdNot(String nome, Long id);
 }

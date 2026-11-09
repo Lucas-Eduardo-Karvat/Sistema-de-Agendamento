@@ -27,6 +27,9 @@ public interface AgendamentoRepository extends JpaRepository<Agendamento, Long> 
 
     Optional<Agendamento> findByPublicId(UUID publicId);
 
+    // Admin: um exame com histórico de agendamentos (de qualquer status) não pode ser excluído fisicamente
+    boolean existsByExameId(Long exameId);
+
     // Usado para impedir a remoção de um paciente que ainda tem exames em andamento
     boolean existsByPacienteIdAndStatusIn(Long pacienteId, Collection<String> status);
 

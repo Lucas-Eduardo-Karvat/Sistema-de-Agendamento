@@ -44,6 +44,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/usuarios").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                // Painel administrativo: só ADMIN
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 // Área da recepção: só RECEPCIONISTA e ADMIN (o filtro monta a role como ROLE_<cargo>)
                 .requestMatchers("/api/recepcao/**").hasAnyRole("RECEPCIONISTA", "ADMIN")
                 // O próprio perfil é liberado para qualquer usuário autenticado (precisa vir antes da regra abaixo)
